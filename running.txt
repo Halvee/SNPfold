@@ -1,0 +1,17 @@
+
+
+SNPfold - Instructions for running
+----------------------------------
+
+RNAfold does not require installation.   It is run by calling SNPfold.py and sending it through the python interpreter along with several arguments.   The script does call a few included shell scripts, so a UNIX-like environment is a prerequisite for proper functioning of SNPfold.   There are also some additional requirements for the running of SNPFold:
+1. installation of RNAfold
+2. installation of the Numpy module for Python
+
+In order to take full advantage of SNPfold's ability to graphically represent patterns of RNA structure change, the installation of Matplotlib is required.   Otherwise, results can be saved in text format, and the User may utilize a graph-making program of their own choosing (ex: Microsoft Excel, Matlab)
+
+SNPfold - Options
+-----------------
+  -a, --accurate    Calculate accurate p-values for mutations indicated by user.   Default is calculation of Estimated p-values only, which involves finding the rank of correlation coefficient of a mutation in question amongst all mutations in a pre-computed randomized RNA sequence of equivalent length.   This option will tell SNPfold to go ahead and calculate correlation coefficients for all possible single mutations in the RNA, and then find the rank of the mutation(s) in question.   This allows for an accurate assessment of a mutation's secondary structure-changing potential in comparison to all other single mutations in a given transcript.   Unfortunately, it can make the runtime go up substantially.   Take note that the calculation of accurate p-values go up on the order of N^3, where N represents the length of the RNA sequence in question.   It is not advisable to try to calculate accurate p-values for a sequence greater than 2000 nucleotides in length.   Also take note that by default, the input sequence, mutation correlation coefficients and accurate p-values, as well as all correlation coefficients calculated for every possible single mutation will be saved in a directory in the output folder.
+  -h, --help    Display the contents of 'running.txt,' a help file found in the SNPfold source folder.
+  -n, --nameDir= <dirName>    Allows user to assign a name to the output dir where output files will be placed.   Only works if done in combination with -o and/or -a.   Default setting is to assign a randomized directory name consisting of eight characters.
+  -o, --output= [vals|graphs|all]    Save indicated output files for a given running of SNPfold into a directory found in the 'output' folder.   'vals' will allow user to save only the raw calculation result files, including data files for the partition function matrices, base pairing probabilities, and correlation coefficients/p-values for mutations indicated.   'graphs' will allow user to save the aforementioned items in graphical format.   Note once again that this requires proper installation of the Matplotlib module.   If user wishes to make their own graphs of output data, they may use the files produced in 'vals' as their starting point.   'all' will allow user to save data file and graph image output files for input sequence/mutations.
