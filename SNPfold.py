@@ -1,91 +1,87 @@
 """
-SNPfold.py
-Authors: Matt Halvorsen (Original code, definition packaging/annotating 12-15-2010)
+Matt Halvorsen (Original code, definition packaging/annotating 12-15-2010)
 		 Sam Broadaway  (Modifications)
-		 J.S. Martin	(Modifications 7-12-2010)
+		 J.S. Martin	(Modifications 2010-07-12)
+		 Chas Kissick	(Modifications 2011-10-05)
 """
-
+import getopt
 import os
 import string
 import sys
+import math
 import numpy
 import random
+from shutil import rmtree
+nts=['A','T','U','G','C','I','-']
+
+import datetime
 
 def main(argv):
-	import getopt
+	global wt_name
+	
 	argv=argv[1:]
-	###check to see if output dir exists.. if it doesn't, it is created
+	#check to see if output dir exists.. if it doesn't, it is created
 	haveOutputDir=os.path.isdir('output')
 	if haveOutputDir==False:
 		os.system('mkdir output')
 	#establish acceptable nts in seq and mutations listed
-	nts=['A','T','U','G','C','I']
+	nts=['A','T','U','G','C','I','-']
 	SNPs = []
 	
 	#INITIALIZATION
+	wt_name="wt"
+	need_dir=False
+	printPartit=False
 	accurateCalc=False
 	DirName=None
 	help=None
-	thingsToSave=None
+	save_vals=False
+	shannon=False
+	windowMode=False
 	
+	import argparse
+	opts = argparse.ArgumentParser()
+	opts.add_argument("-a","--accurate",
+		help="Calculate accurate p-values for mutations indicated by user.", action="store_true")
+	opts.add_argument("-o","--output",choices=['partit','partition'],
+		help="Specify files to be output.")
+	opts.add_argument("-sh","--shannon", help="Specify files to be output.", action="store_true")
+	opts.add_argument("-w","--window", nargs='?', type=int, const=150, default=0,
+		help="Calculate the results based on only a window of the sequence centered around one SNP.")
+	opts.add_argument("-n","--nameDir", help="Name the output directory.")
+	opts.add_argument("-s","--save", help="Save all inputs and calculations.", action="store_true")
+	opts.add_argument("wild_type", help="Nucleotide sequence")
+	opts.add_argument("mutants", help="SNPs separated by colon, e.g. A5G:T18C")
+	args = opts.parse_args()
 	
-	
-	try:
-		#get options and arguements from user input
-		opts, args = getopt.getopt(argv, "ao:n:h",\
-		["accurate","output=","nameDir=","help"])
-		#print 'options : '+str(opts)
-		#print "arguements : "+str(args)
-	except getopt.GetoptError:
-		#halt program if invalid options are passed by user
-		usage()
-		sys.exit(2)
-	
-	#set paramaters based on options specified by user
-	options=[]
-	options_input=[]
-	for item in opts:
-		opt = item[0]
-		arg = item[1]
-	
-		if opt == '-a' or opt=='--accurate':
-			#if user indicates for it, turn on accurate p-val calculations
-			accurateCalc = True
-			if DirName == None:
-				DirName = True
-		elif opt == '-n' or opt=='--nameDir=':
-			#if user indicates for it, give the output directory a user-specified name
-			DirName = arg
-		elif opt=='-h' or opt == '--help':
-			#if user indicates for it, call up the directions for running SNPfold
-			help = getUnixCommandOutput('more running.txt')
-			print help
-			sys.exit(2)
-		elif opt == '-o' or opt == '--output=':
-			#save output files that are specified by user
-			thingsToSave = arg
-			if DirName == None:
-				DirName = True
-			#if the argument passed by user are not valid, halt program
-			if thingsToSave not in ['vals','graphs','all']:
-				usage()
-				sys.exit(2)
-	
+	#Assign user requested options
+	accurateCalc = args.accurate
+	if args.output:
+		if 'partit' in args.output or 'partition' in args.output:
+			printPartit = True
+		else:
+			printPartit = False
+	if args.shannon:
+		shannon = True
+		need_dir = True
+	else:
+		shannon = False
+	windowMode = args.window
+	if args.window:
+		size = int(args.window)
+		need_dir=True
+	DirName = args.nameDir
+	if args.save:
+		save_vals=True
+		need_dir=True
+	_wild_type=args.wild_type
+	mutants=args.mutants
+					
 	#if after parameters call for the establishment of output files but a dirName is unestablished,
 	#create a random 8 character long string for the dirName
-	if DirName==True:
+	if DirName==None and need_dir==True:
 		DirName=generate_random_string(8)
 	
-	#obtain wildtype sequence and mutations.. halt program if one or the other isn't there
-	if len(args)!=2:
-		usage()
-		sys.exit(2)		
-	try:
-		_wild_type=args[0]
-		mutants=args[1]
-	except:
-		usage()
-		sys.exit(2)
 	#is 'wild_type' a FASTA filename?
 	if os.path.isfile(_wild_type)==True:
 		try:
@@ -100,14 +96,57 @@ def main(argv):
 	#if 'wild_type' is not a filename, establish it as the wildtype sequence
 	else:
 		wild_type=_wild_type
+	#make 'wild_type' uppercase
+	wild_type=str.upper(wild_type)
 	#if non-nt characters are found in wild_type sequence, halt program
-	for char in wild_type:
-		if char not in nts:
-			usage()
-			sys.exit(2)			
-	#check to see if SNPs are actually SNPs:
 	
-	SNPs=mutants.split(':')
+	#is 'mutants' a filename?
+	if os.path.isfile(mutants)==True:
+		try:
+			mutants=read_data(mutants)
+		except:
+			usage()
+			sys.exit(2)
+			
+	#make contents of 'mutants' uppercase
+	mutants=str.upper(mutants)
+	#check to see if SNPs are actually SNPs:
+	if wild_type.count("/")==1:
+		(wt_name,mutation)=wild_type.split("/")
+	if "-" in mutants and accurateCalc:
+		usage(None,"Error: P values cannot be calculated with deletion or insertion mutations.")
+		sys.exit(2)
+	
+	SNPs=mutants.split(":")
+	
+	#run window calculations before printing the sequence
+	if windowMode:
+		if len(SNPs) > 1:
+			usage(None,"Error: Window mode can only be used with one SNP at a time.")
+			sys.exit(2)
+		#Make sure the segment is even so both sides of the window are of equal length
+		if size:
+			if size % 2 == 1:
+				segment = size + 1
+		#else:
+		#	size = 150
+		segment = size/2
+		center = int(SNPs[0].strip('ACGTU-'))
+		windowMode = SNPs[0]
+		if center <= segment:
+			first = 0
+			last = segment*2 + 1
+		elif len(wild_type)-center <= segment:
+			first = len(wild_type) - segment*2 - 1
+			last = len(wild_type)
+			SNPs[0]=SNPs[0][0]+str(len(wild_type)-segment)+SNPs[0][-1]
+		else:
+			first = center - segment - 1
+			last = center + segment
+			SNPs[0]=SNPs[0][0]+str(segment+1)+SNPs[0][-1]
+		wild_type = wild_type[first:last]
+		print wild_type
+	'''
 	for SNP in SNPs:
 		subSNPs=SNP.split(',')		
 		for subSNP in subSNPs:
@@ -121,20 +160,28 @@ def main(argv):
 				nts.index(newNT)
 				int(subSNP[1:-1])
 			except:
+				print "mut character not a nucleotide"
 				usage()
-				sys.exit(2)				
-	
+				sys.exit(2)
+	'''
 	#establish a list of parameter settings to pass onto the 'calculate_data' definition
-	options=[accurateCalc,DirName,thingsToSave]	
+	options=[accurateCalc,DirName,save_vals,printPartit,shannon,windowMode]
 	#Carry out the SNPfold algorithm according to user-specified input and parameters
 	calculate_data(wild_type, SNPs,options)
-	exit(0)
+	return 
 
-def usage():
+def usage(faultyString=None,message=None):
+	if faultyString!=None:
+		print "error with : "
+		print faultyString
+	if message!=None:
+		print message
 	#Standard output upon detection of user input error
 	print 'SNPfold [-h, --help] [-a, --accurate] \
-[-n, --nameDir= outputDirName] [-o, --output= vals|graphs|all] <sequence or seq file> <mutations>'
-
+[-n, --nameDir= outputDirName] [-o, --output (partition or shannon)] \
+[-s, --save] [-w, --window= window size] <sequence or seq file> <mutations>'
+	#exit(0)
+	
 def getUnixCommandOutput(command):
 	#Get direct stdout from Unix command
 	child=os.popen(command)
@@ -151,9 +198,8 @@ def read_data(filename):
 	file.close()
 	return file_contents
 
-
 def format_to_RNA(RNA_chars):
-	#seperates out newlines, replaces T's with U's in an RNA seq or a string of RNA seqs
+	#separates out newlines, replaces T's with U's in an RNA seq or a string of RNA seqs
 	if isinstance(RNA_chars,str):
 		RNA_chars=RNA_chars.replace('\n','')
 		RNA_chars=RNA_chars.replace('T','U')
@@ -165,34 +211,35 @@ def format_to_RNA(RNA_chars):
 			count+=1
 	return RNA_chars
 
-
 def calculate_data(wild_type, SNPs,options):
-
 	#unpack list of user specified parameters
-	[accurateCalc,dirName,thingsToSave]=options
-
-			
-	
+	[accurateCalc,dirName,save_vals,printPartit,shannon,window]=options
 	#format the RNA sequence string
 	wild_type=format_to_RNA(wild_type)
+	#format the RNA SNPs
+	SNPs=format_to_RNA(SNPs)
+	check_mutant_accuracy(wild_type,SNPs)
 	wt_partit=None
+	
 	#create directory to place user-specified results in, as well as 
 	#a file containing the wildtype RNA sequence string for the job being carried out
 	if dirName!=None:
-		os.system('mkdir output/'+dirName)
+		if os.path.isdir('output/'+dirName)==True:
+			direxists(dirName)
+		else: os.system('mkdir output/'+dirName)
+		if shannon:
+			os.system('mkdir output/'+dirName+'/bp_prob_derived')
 		outfile_name='output/'+dirName+'/SNPFold_output.txt'
-		os.system('echo ">SNPfold sequence : " > output/'+dirName+'/SNPfold_sequence.txt')
+		os.system('echo ">SNPfold sequence: " > output/'+dirName+'/SNPfold_sequence.txt')
 		os.system('echo "'+wild_type+'" >> output/'+dirName+'/SNPfold_sequence.txt')
 	out_data=[]
-	#format the RNA SNPs
-	SNPs=format_to_RNA(SNPs)
 	if accurateCalc==True:
 		headerLine='Mutation corr_coeff rank acc_p_val'
 		#remove 'accurateCalc' from options list, as we no longer need it
 		options=options[1:]
 		#find corr_coeffs, ranks, and accurate p-values for each user-specified SNP in the RNA
 		(corr_coeffs,ranks,p_values)=get_accurate_p_value(wild_type, SNPs, \
-		'all_corr_coeffs.txt',options)
+		'output/'+dirName+'/all_corr_coeffs.txt',options)
 		
 		for SNP,corr_coeff,rank,p_value in zip(SNPs,corr_coeffs,ranks,p_values):
 			out_data.append([SNP,corr_coeff,rank,p_value])
@@ -200,109 +247,276 @@ def calculate_data(wild_type, SNPs,options):
 		os.system("rm dot.ps rna.ps")
 	else:			
 		#default SNPfold mode (p-values are estimated)
-		headerLine='Mutation corr_coeff rank est_p_val'
+		headerLine='Mutation corr_coeff'
 		#remove 'accurateCalc' from options list, as we no longer need it
 		options=options[1:]
 		#find corr_coeffs, ranks, and estimated p-values for each user-specified SNP in the RNA
+		out_data=no_p_value(wild_type, SNPs, options)
 
-		out_data=get_estimate_p_value(wild_type, SNPs, options)
-
-
-	#if indicated to do so, write the results to an output 
-	#directory of either random or user-specified name
+	#if indicated to do so, write the results to dir, either random or user-specified name
+	if save_vals==True:
+		if printPartit==False:
+			write_output_to_file(outfile_name,headerLine,out_data)
+	#tell user where to find output files
 	if dirName!=None:
+		print 'Output files are located at:\n%s'%(os.getcwd()+'/output/'+dirName)
+	return
 	
-		write_output_to_file(outfile_name,headerLine,out_data)
+def indel_formatting(partit,sequence,type="wt"):
+	formatted_partit=partit
+	sequenceCount=0
+	partitCount=0
+	#KEEP TRACK OF DELETE POSITIONS
+	deletes=[]
+	#sequence length can't be less than partit length
+	while sequenceCount<len(sequence):
+		if type=="wt" and sequence[sequenceCount]=="-":
+			formatted_partit.remove(partit[partitCount])
+			deletes.append(sequenceCount)
+			sequenceCount+=1
+		elif type=="mut" and sequence[sequenceCount].islower():
+			formatted_partit.remove(partit[partitCount])
+			deletes.append(sequenceCount)
+			sequenceCount+=1
+			
+		else:
+			partitCount+=1
+			sequenceCount+=1
+	return [formatted_partit,deletes]
 
-		#tell user where to find output files, if they decided to save any
-		print
-		print 'output files sent to location : '
-		print 'output/'+str(dirName)+'/ '
-		print 'in your SNPfold source folder'
-		print
+def window(fullsequence, coord, windowradius, windowoffset=0):
+	coord=coord-1
+
+	windowsequence=None
+	if (2*windowradius>len(fullsequence)):
+		usage()
+	elif coord<windowradius:
+		windowsequence=fullsequence[:coord+windowradius]
+	elif (coord+windowradius)>len(fullsequence):
+		windowsequence=fullsequence[coord-windowradius:]
+	else:
+		windowsequence=fullsequence[coord-windowradius:coord+windowradius+1]
+	return windowsequence
+
+
+def get_seq_eval(seq):
+	eval_indeces=[]
+	originalPositionCount=0
+	positionCount=0
+	mask=""
+	original_seq_positionCount=0
+	while positionCount < len(seq):
+		if seq[positionCount]=="-":
+			eval_indeces.append("D")
+			originalPositionCount+=1
+
+		elif seq[positionCount].islower():
+			eval_indeces.append("I")
+		else:
+			eval_indeces.append(originalPositionCount)
+			originalPositionCount+=1
+		positionCount+=1
+	return eval_indeces
 	
-	exit(0)
+def process_wt_seq(_wild_type):
+	if (_wild_type.count("/")>1):
+		#print "1"
+		usage()
+	elif (_wild_type.count("/")==1):
+		[wild_type,wt_variant]=_wild_type.split("/")
+		if wt_variant.find(":")!=-1:
+			#print "2"
+			usage()
+		wt_variant=get_mutant_sequences(wild_type, [wt_variant])
+
+		new_wild_type=wt_variant[0][1]
+		
+	else:
+		wild_type=_wild_type
+		new_wild_type=_wild_type
+	for char in wild_type:
+		if char not in nts:
+			print "wt character not a nucleotide"
+			#print "3"
+			usage()
+			sys.exit(2)
+
+	wt_matrix = get_matrix('wildtype',"dot.ps",new_wild_type, 0)
+	wt_partit = get_partit(wt_matrix)	
+	#print new_wild_type
+	#print wt_matrix
+	#print wt_partit
+	#print len(wt_partit)
+	#quit()
+	return [new_wild_type,wt_matrix,wt_partit]
+
+
+def readjust_SNP_positions(SNPs,positionInfos):
+	import re
+	newSNPlist=[]
+	for SNP in SNPs:
+		subSNPlist=[]
+		subSNPs=SNP.split(",")
+		for subSNP in subSNPs:
+			positionOrig=re.findall(r"\d+",subSNP)
+			positionOrig=int(positionOrig[0])
+			if positionOrig in positionInfos:
+				positionNew=positionInfos.index(positionOrig)
+				subSNP=subSNP.replace(str(positionOrig),str(positionNew))
+				subSNPlist.append(subSNP)		
+		subSNPsString=",".join(subSNPlist)
+		newSNPlist.append(subSNPsString)
+
+	return newSNPlist
 	
-def get_estimate_p_value(wild_type, SNPs, options):
-	out_data=[]
-	corr_coeffs=ranks=p_values=[]
-	[dirName,thingsToSave]=options
-	wt_matrix = get_matrix('wildtype',"dot.ps",wild_type)
-	wt_partit = get_partit(wt_matrix)
-	#Did user specify they wished to save output files?
-	if thingsToSave=='vals':
+	
+def no_p_value(wild_type, SNPs, options):
+	corr_coeffs=[]
+	[dirName,save_vals,printPartit,shannon,window]=options
+	
+	[new_wild_type,wt_matrix,wt_partit]=process_wt_seq(wild_type)
+	wild_type=wild_type.split("/")[0]
+	positionInfos_wt=range(0,len(new_wild_type))	
+	positionInfos=get_seq_eval(new_wild_type)
+	formatted_wt_partit=list(wt_partit)	
+	if save_vals==True:
 		#save wt matrix and basepairing prob textfiles
 		save_matrix(wt_matrix,"output/"+dirName+"/wildtype.txt")
 		save_Basepairing_Probabilities("output/"+dirName+"/wildtype_bpProbs.txt",wild_type,wt_partit)
-	elif thingsToSave=='graphs':
-		#save wt matrix image
-		make_matrix_image(wt_matrix,"output/"+dirName+"/wildtype.eps")
-	elif thingsToSave=='all':
-		#save wt matrix and base pairing prob textfiles, as well as wt matrix image
-		save_matrix(wt_matrix,"output/"+dirName+"/wildtype.txt")
-		save_Basepairing_Probabilities("output/"+dirName+"/wildtype_bpProbs.txt",wild_type,wt_partit)
-		make_matrix_image(wt_matrix,"output/"+dirName+"/wildtype.eps")
-
-	#get full RNA sequences for mutants of interest
-	mutants = get_mutant_sequences(wild_type, SNPs)
-	all_mutant_partits = []
-	SNP_positions = []
 	
-	for mutant in mutants:
-		#Get each mutant partition function matrix + matrix column sums
-		mt_matrix=get_matrix(mutant[0],"dot.ps",mutant[1])
-		mt_partit = get_partit(mt_matrix)
-		all_mutant_partits.append(mt_partit)
+	if "NONE" in SNPs:
+		mutants=[]
+	else:
+		#get full RNA sequences for mutants of interest
+		mutants = get_mutant_sequences(new_wild_type, SNPs)
+		all_mutant_partits = []
+		SNP_positions = []
+
+	if printPartit==False:
+		out_data=[]
+	else:
+		formatted_wt_partit=[float("%.4f" % val) for val in formatted_wt_partit]		
+		formatted_wt_partit=[str(val) for val in formatted_wt_partit]
+		positionInfos_wt=[str(val) for val in positionInfos_wt]
+		outputMaterial=str(string.join(formatted_wt_partit,","))+":"+str(string.join(positionInfos_wt,","))
+		out_data=[['WT',outputMaterial]]
+
+	if shannon:
+		shanWt = shannon_entropy(dirName, wt_matrix, 'wt', 0)
 		
-		SNP_position=get_position(mutant[0])
-		SNP_positions.append(SNP_position)		
+	for mutant in mutants:
+		(mutation,mut_seq)=mutant
+		#delete wildtype partit vals where there is a deletion that occurs in mutant
+		#print mut_seq
+		
+		positionInfosMut=get_seq_eval(mut_seq)
+		mut_seq_2fold=mut_seq.replace("-","")
+		while(1):
+			try:
+				positionInfosMut.remove("D")
+			except:
+				break
+
+		masking_array=[wild_type,positionInfos,mut_seq,positionInfosMut]
+		if window:
+			mt_matrix=get_matrix(mutation,"dot.ps",mut_seq_2fold,1)
+		else:
+			mt_matrix=get_matrix(mutation,"dot.ps",mut_seq_2fold,0)
+		mt_partit = get_partit(mt_matrix)
+		formatted_mut_partit=list(mt_partit)
+		
+		if shannon:
+			if window:
+				shannon_entropy(dirName, mt_matrix, window, shanWt)
+			else:
+				shannon_entropy(dirName, mt_matrix, mutation, shanWt)
+		
+		partit_adjusted_wt=[]
+		partit_adjusted_wt=[]
+		
+		masterSet=[]
+		partit_adjusted_wt=[]
+		partit_adjusted_mut=[]
+		count=0
+		while count<len(wild_type):
+			if count in positionInfos and count in positionInfosMut:
+				partitIndex=positionInfos.index(count)
+				partit=formatted_wt_partit[partitIndex]
+				partit_adjusted_wt.append(partit)
+				partitIndex=positionInfosMut.index(count)
+				partit=formatted_mut_partit[partitIndex]
+				partit_adjusted_mut.append(partit)
+
+				masterSet.append(count+1)			
+			count+=1
+		
+		#print partit_adjusted_wt
+		#print partit_adjusted_mut
+		#print masterSet
+		#print len(partit_adjusted_wt)
+		#print len(partit_adjusted_mut)
+		#print len(masterSet)
+
+		#remove deletion symbols from mutant sequence before folding of seq
+		###mut_seq=mut_seq.replace("-","")
+		#fold mutant sequence (with insertions if any are present
+		'''
+		mt_matrix=get_matrix(mutation,"dot.ps",mut_seq)
+		mt_partit = get_partit(mt_matrix)
+		#delete partits corresponding to insertions in mutant sequence if there are any
+		[formatted_mut_partit,mut_deletes]=indel_formatting(mt_partit,mut_seq,type="mut")
+
+		if printPartit==True:
+			mt_partit_2join=[str(val) for val in mt_partit]
+			print str(mutant[0])+":"+string.join(mt_partit_2join,",")
+
 		all_mutant_partits.append(mt_partit)
+		'''
+		SNP_position=mutant[0].strip('ACGTU-')
+		SNP_positions.append(SNP_position)		
+		all_mutant_partits.append(partit_adjusted_mut)
 
 		#calculate correlation coefficient between wildtype and mutant part. func. column sums	
-		raw_data = numpy.corrcoef(wt_partit,mt_partit)	
+		raw_data = numpy.corrcoef(partit_adjusted_wt,partit_adjusted_mut)	
 		corr_coeff = raw_data[0][1]
-		
-		#Estimate the rank and p-value of the mutation 
-		rank_p_value = estimate_p_value(str(corr_coeff),len(mutant[1]))
-		rank = rank_p_value[0]
-		p_value = rank_p_value[1]
-		
-		out_data.append([mutant[0],corr_coeff,rank,p_value])
-		#Did user specify they wished to save output files?
-		if thingsToSave=='vals':
+		if printPartit==False:
+			out_data.append((wt_name+"/"+str(mutant[0]),corr_coeff))
+		else:
+			partit_adjusted_mut=[float("%.4f" % val) for val in partit_adjusted_mut]
+			partit_adjusted_mut=[str(val) for val in partit_adjusted_mut]
+			
+			formatted_mut_partit=[float("%.4f" % val) for val in formatted_mut_partit]
+			formatted_mut_partit=[str(val) for val in formatted_mut_partit]
+			positionInfosMut=[str(val) for val in positionInfosMut]
+			outputMaterial=str(string.join(formatted_mut_partit,","))+":"+str(string.join(positionInfosMut,","))
+			out_data.append((mutant[0],outputMaterial))
+		if save_vals==True:
 			#save mutant matrix and basepairing prob textfiles
-			save_matrix(mt_matrix,"output/"+dirName+"/"+mutant[0]+".txt")
-			save_Basepairing_Probabilities("output/"+dirName+"/"+mutant[0]+"_bpProbs.txt",mutant[1],mt_partit)
-		elif thingsToSave=='graphs':
-			#save matrix image, as well as graph of basepairing probs (wildtype vs. mutant)
-			make_matrix_image(mt_matrix,"output/"+dirName+"/"+mutant[0]+".eps")
-			make_Basepairing_Probs_graph("output/"+dirName+"/"+mutant[0]+'_bpProbs_vs_wt.eps',wt_partit,mt_partit)				
-		elif thingsToSave=='all':
-			#save output textfiles plus image graphs, as well as graphs
-			save_matrix(mt_matrix,"output/"+dirName+"/"+mutant[0]+".txt")
-			make_matrix_image(mt_matrix,"output/"+dirName+"/"+mutant[0]+".eps")
-			save_Basepairing_Probabilities("output/"+dirName+"/"+mutant[0]+"_bpProbs.txt",mutant[1],mt_partit)
-			make_Basepairing_Probs_graph("output/"+dirName+"/"+mutant[0]+'_bpProbs_vs_wt.eps',wt_partit,mt_partit)
+			if window:
+				save_matrix(mt_matrix,"output/"+dirName+"/"+window+".txt")
+				save_Basepairing_Probabilities("output/"+dirName+"/"+window+"_bpProbs.txt",
+					mutant[1],mt_partit)
+			else:
+				save_matrix(mt_matrix,"output/"+dirName+"/"+mutant[0]+".txt")
+				save_Basepairing_Probabilities("output/"+dirName+"/"+mutant[0]+"_bpProbs.txt",
+					mutant[1],mt_partit)
+
 	#clear out files at the end of job that aren't needed	
-	os.system("rm dot.ps rna.ps estimated_p_value.txt")
+	os.system("rm dot.ps rna.ps")
 	#print results on command line
+	#print out_data
 	for data in out_data:
-		print(str(data[0])+':'+str(data[1])+':'+str(data[2])+':'+str(data[3]))
-	
+		print ((data[0])+':'+str(data[1]))
+			
 	#if wt_matrix and wt_partit were overwritten, recalculate them
 	if wt_partit==None:
-		wt_matrix=get_matrix('wildtype',"dot.ps",wild_type)
+		wt_matrix=get_matrix('wildtype',"dot.ps",wild_type,0)
 		wt_partit=get_partit(wt_matrix)
-	if (thingsToSave=='all' or thingsToSave=='graphs') and len(SNPs)>1:
-		#create a graph of average base accessibility change
-		#across the RNA for the mutations of interest
-		make_average_change_graph(wt_partit, all_mutant_partits,SNP_positions,dirName)
 		
 	return out_data
 
 def write_output_to_file(filename,headerLine,out_data):
-	#writes creates a file, writes a header line, and then writes
-	#to it things in the list 'out_data', where each item in the list is a line 
+	#creates a file with a header line and the list 'out_data', where each item is a line 
 	os.system('echo "'+headerLine+'" > '+filename)
 	for dataLine in out_data:
 		#print dataLine
@@ -311,82 +525,132 @@ def write_output_to_file(filename,headerLine,out_data):
 		dataLine=dataLine.replace('     ','')
 		os.system('echo "'+dataLine+'" >> '+filename)
 	return
+
+def check_mutant_accuracy(wild_type, SNPs):
+	import re
+	mutants = []
+	bad_SNPs=[]
+
+	if "NONE" in SNPs:
+		return
 	
+	for SNP in SNPs:
+		errors=False
+		subSNPs=SNP.split(",")
+		for subSNP in subSNPs:	
+			positionset=re.findall(r"\d+",subSNP)
+			if len(positionset)==1:
+				position=positionset[0]
+				pos=int(position)-1
+				[wt_nt,mut_nt]=string.split(subSNP,position)
+				if (wt_nt != wild_type[pos:pos+len(wt_nt)] and wt_nt!="-"):
+					errors=True
+			else:
+				errors=True
+			
+		if errors==False:
+			mutants.append(SNP)
+		else:
+			bad_SNPs.append(SNP)
+
+
+	if len(bad_SNPs)>0:
+		print "ERROR WITH THE FOLLOWING SNPs : "
+		for item in bad_SNPs:
+			print item
+		sys.exit(2)
+	else:
+		pass
+	return
+
 def get_mutant_sequences(wild_type, SNPs):
+	#print SNPs
+	import re
 	#given a wildtype sequence and a list of formatted SNPs, returns a mutant sequence for each SNP
 	#Note: format = wt_nuc+position+mut_nuc (ex: A36G, U22C, G5A)
-	
 	#intialize
 	mutants = []
 	errors = False
 	bad_SNPs = []
 
-	
 	for SNP in SNPs:
-		if SNP.find(',')>-1:
+		#SNP=SNP.replace("-","X")
+		SNPlist=string.split(SNP,",")
+		mutant=wild_type
+		indel_offset=0
+		for subSNP in SNPlist:
+						
 			#if commas are found in string, then there are multiple SNPs in listed variant..
 			#split comma delimited SNPs in string into a list
-			dSNP=SNP.replace(',','\n').splitlines()
-			mutant=wild_type
-			for subSNP in dSNP:
-				#go through each sub-SNP listed in variant
-				pos=int(get_position(subSNP))-1
-				wt_nt = subSNP[0]
-				#if wildtype seq at given position does not equal SNP inputed by user, error
-				if (wild_type[pos] != wt_nt):
-					#If user inputed wt_nucleotide doesn't equal input sequence, 
-					#collect the faulty SNP 
-					errors = True
-					bad_SNPs.append(subSNP)
-				mutant_nt = subSNP[len(subSNP)-1]
-				#mutant sequence = wildtype (up to position) + new_nt + wildtype (after position)
-				mutant = mutant[0:pos]+mutant[pos].replace(wt_nt,mutant_nt)+mutant[pos+1:]
-			#put the SNP itself and mutant as an entry in a tuple
-			mutants.append((SNP,mutant))
-		else:
-			#if a single SNP is in the listed variant
-			#similiar to above, except no need to split into subSNPs
-			SNP_position=get_position(SNP)
-			wt_nt = SNP[0]
-			pos = ""
-			c_pos = 1
-			while (c_pos < len(SNP) - 1):
-				pos += SNP[c_pos]
-				c_pos += 1
-			pos = int(pos)-1
-			if (wild_type[pos] != wt_nt):
-				#If user inputed wt_nucleotide doesn't equal input sequence, 
-				#collect the faulty SNP
-				errors = True
-				bad_SNPs.append(SNP)
-			mutant_nt = SNP[len(SNP)-1]
+			#go through each sub-SNP listed in variant
+			positionset=re.findall(r"\d+",subSNP)
+			if len(positionset)>1:
+				usage(subSNP,"improper formatting of entered SNP number")
+				sys.exit(2)
+			#print positionset
 			
-			mutant = wild_type[0:pos]+wild_type[pos].replace(wt_nt,mutant_nt)+wild_type[pos+1:]
-	
-			mutants.append((SNP,mutant))
-	
-	if errors:
-		#If errors are detected, then return error message and exit SNPfold
-		message = "Error: Wild-type nucleotide in SNPs "
-		count = 0
-		while (count < len(bad_SNPs)-1):
-			bad_SNP = bad_SNPs[count]
-			message += bad_SNP+", "
-			count += 1
-		#report which input SNPs are incorrectly formatted
-		message += bad_SNPs[-1]+" do not match wild-type sequence."
-		os.system("echo "+message)
-		exit(1)
+			pos_relativeToWt=int(positionset[0])-1
+			pos=int(positionset[0])-1+indel_offset
+			ntSet=re.findall(r"\D+",subSNP)
+			
+			#print ntSet
+			if len(ntSet)!=2:
+				usage(subSNP)
+				sys.exit(2)
+			[wt_nt,mut]=ntSet
+			indelstatus=[0,0]
+			if wt_nt=="-":
+				indelstatus[0]=1
+			if mut=="-":
+				indelstatus[1]=1
 
+			if sum(indelstatus)==0 and len(wt_nt)==len(mut):
+				#SNP mode
+				ntAtCoord=wild_type[pos_relativeToWt:pos_relativeToWt+len(wt_nt)]
+				if (ntAtCoord != wt_nt and ntAtCoord != mut):
+					errors=True
+					bad_SNPs.append(subSNP)
+					print "--------------"
+					print ntAtCoord
+					print wt_nt
+					print mut
+					print wild_type
+					print "--------------"
+					print "my"
+					#usage(subSNP)
+					#sys.exit(2)
+				if mutant[pos]!="-":
+					mutant=mutant[0:pos]+mut+mutant[len(mut)+pos:]
+				else:
+					mutant=mutant
+					
+			elif indelstatus[0]==1:
+				mutant=mutant[0:pos]+mut.lower()+mutant[pos:]
+				indel_offset+=len(mut)
+				#insertion
+				pass
+				
+			elif indelstatus[1]==1:
+				mutant=mutant[0:pos]+"-"*len(wt_nt)+mutant[len(wt_nt)+pos:]
+				#deletion
+				pass
+			else:
+				usage(subSNP)
+				sys.exit(2)
+			
+		mutants.append((SNP,mutant))
+			
+		#if wildtype seq at given position does not equal SNP inputed by user, error
+	if errors:
+		print "ERROR WITH FOLLOWING SNPS : "
+		print ",".join(bad_SNPs)
+		sys.exit()
 	return mutants
 
-
-
-
-def get_matrix(SNP,file_name,RNAseq):
+def get_matrix(SNP,file_name,RNAseq,windowMode):
 	#calculate the matrix of base-pairing probabilities for a given sequence
 	os.system("echo "+RNAseq+" | RNAfold -p > /dev/null")
-	#get nucCOunt form the length of the RNA sequence
+	#get nucCount from the length of the RNA sequence
 	nucCount = len(RNAseq)
 	#create a matrix of zeros of RNA length X RNA length
 	myMatrix = numpy.zeros([nucCount,nucCount])
@@ -416,7 +680,7 @@ def get_matrix(SNP,file_name,RNAseq):
 			myMatrix[int(x)-1,int(y)-1]=(float(partit)*float(partit))
 	
 
-	# These values should be the same, since the matrix is hermetian
+	# These values should be the same, since the matrix is hermitian
 	# Need s for sum of values in columns
 	s=numpy.sum(myMatrix,axis=1)
 	s=numpy.sum(myMatrix,axis=0)
@@ -429,8 +693,48 @@ def get_matrix(SNP,file_name,RNAseq):
 		count += 1
 	return myMatrix
 
+def shannon_entropy(dirName, bp_matrix, label, wt):
+	# Calculate the Shannon entropy values for each nucleotide while summing them
+	nucCount=len(bp_matrix)
+	shanValues=[0]*nucCount
+	bp_probs=[0]*nucCount
+	count=0
+	while(count < nucCount):
+		shanValue=0
+		for p in bp_matrix[count]:
+			if p > 0:
+				shanValue = shanValue + p*math.log(p,2)
+		shanValues[count]=shanValue
+		bp_probs[count]=sum(bp_matrix[count])
+		count += 1
+
+	#n.b. "if wt" checks if the wt values were already calculated, i.e. selects for mutants
+	if wt:
+		wt_shan, wt_bp = zip(*wt)
+		shan_cc = numpy.corrcoef(wt_shan, shanValues)[0,1]
+		bp_cc = numpy.corrcoef(wt_bp, bp_probs)[0,1]
+		cc = numpy.corrcoef(bp_probs, shanValues)[0,1]	
+	
+	#prepare the table to be printed
+	nucleotides=[str(i)+'	' for i in range(1,len(shanValues))]
+	bp_table=[str(i)+'	' for i in bp_probs]
+	sh_table=[str(i)+'	' for i in shanValues]
+	table=zip(nucleotides, bp_table, sh_table)
+	
+	if wt:
+		table.append(['WT/Mutant Correlation Coefficients:\n',
+		'base pairing probability: %s\n'%bp_cc,'shannon entropy: %s'%shan_cc])
+		
+	# output a chart containing the nucleotide number, base pairing probability and entropy	
+	write_output_to_file('output/'+dirName+'/bp_prob_derived/'+label+'.txt',
+		'nuc	base pairing prob	entropy (bits)',table)
+		
+	if label == 'wt':
+		wt = zip(shanValues, bp_probs)
+		return wt
+
 def get_partit(myMatrix):
-	# These values should be the same, since the matrix is hermetian
+	# These values should be the same, since the matrix is hermitian
 	# Need s for sum of values in columns
 	s=numpy.sum(myMatrix,axis=1)
 	s=numpy.sum(myMatrix,axis=0)
@@ -445,22 +749,52 @@ def get_partit(myMatrix):
 		count += 1
 	return partit
 
+def interval_search_simpleAlg(allCorrCoeffValsSorted,val):
+	rank=None
+	if val<allCorrCoeffValsSorted[0]:
+		rank=1
+	elif val>allCorrCoeffValsSorted[-1]:
+		rank=len(allCorrCoeffValsSorted)+1
+	else:
 
+		count=1
+		while count<=len(allCorrCoeffValsSorted):
+			lowerbound=allCorrCoeffValsSorted[count-1]
+			upperbound=allCorrCoeffValsSorted[count]
+			if val>=lowerbound and val<=upperbound:
+				rank=count+1
+				break
+	return rank
+			
+
+def find_accurate_p_val(corrCoeffDict,muts):
+	#muts is in list form
+	totalNumberMuts=len(corrCoeffDict)
 	
-def get_position(mutation):
-	#get position from a mutation in the format wt_nuc+position+mut_nuc (ex: A36G, U22C, G5A)
-	mutation=mutation.replace("A","")
-	mutation=mutation.replace("U","")
-	mutation=mutation.replace("T","")
-	mutation=mutation.replace("C","")
-	mutation=mutation.replace("G","")
-	return mutation
-
+	allSingleMuts_ordered=sorted(corrCoeffDict,key=corrCoeffDict.get)	
+	allSingleMutCCs_ordered=[]
+	for indiv_mut in allSingleMuts_ordered:
+		allSingleMutCCs_ordered.append(corrCoeffDict[indiv_mut])
+	
+	ranks=[]
+	pvals=[]
+	orphan_muts=[]
+	for mut in muts:
+		if mut in allSingleMuts_ordered:
+			rank=allSingleMuts_ordered.index(mut)+1
+			pval=float(rank)/totalNumberMuts
+			pval=round(pval,5)
+			pvals.append(pval)
+			ranks.append(rank)
+		else:
+			interval_search_simpleAlg(allSingleMuts_ordered,mut)
+	return (ranks,pvals)		
+		
 
 def get_accurate_p_value(RNA, mutsOfInterest, outfile_name,options):
 	#get accurate p-value for each listed mutation in the RNA of interest given 
 	#the user specified options, and output files if indicated by user
-	[dirName,thingsToSave]=options
+	[dirName,save_vals,printPartit,shannon,window]=options
 	
 	#create an output file for mutations looked at
 	headerLine='Mutation corr_coeff'
@@ -475,26 +809,14 @@ def get_accurate_p_value(RNA, mutsOfInterest, outfile_name,options):
 	count=0
 	wild_type=RNA
 	#do partit func calculations for wildtype seq
-	wt_matrix=get_matrix('wild_type',"dot.ps",wild_type)
-	wt_partit=get_partit(wt_matrix)
-
-	if thingsToSave=='vals':
+	[new_wild_type,wt_matrix,wt_partit]=process_wt_seq(wild_type)
+	#print len(wt_partit)
+	if save_vals==True:
 		#save wt matrix and basepairing prob textfiles
 		save_matrix(wt_matrix,"output/"+dirName+"/wildtype.txt")
 		save_Basepairing_Probabilities("output/"+dirName+"/wildtype_bpProbs.txt",wild_type,wt_partit)
-	elif thingsToSave=='graphs':
-		#save wt matrix image
-		make_matrix_image(wt_matrix,"output/"+dirName+"/wildtype.eps")
-	elif thingsToSave=='all':	
-		#save wt matrix and base pairing prob textfiles, as well as wt matrix image
-		save_matrix(wt_matrix,"output/"+dirName+"/wildtype.txt")
-		save_Basepairing_Probabilities("output/"+dirName+"/wildtype_bpProbs.txt",wild_type,wt_partit)
-		make_matrix_image(wt_matrix,"output/"+dirName+"/wildtype.eps")
-
-
-
-
-
+	if shannon:
+			shanWt = shannon_entropy(dirName, wt_matrix, 'wt', 0)
 	#create various empty lists for collecting all possible single mutations in the RNA of interest
 	all_mutant_partits=[]
 	all_mutant_partits_of_interest=[]
@@ -502,104 +824,101 @@ def get_accurate_p_value(RNA, mutsOfInterest, outfile_name,options):
 	SNP_positions_of_interest=[]
 	nt_list='AUGC'
 
-	
-	while (count<len(wild_type)):
+	allSingleMuts={}
+	while (count<len(new_wild_type)):
 		#do a partit func calculation for all possible single mutations in the RNA of interest
 		variants=nt_list.replace(wild_type[count],'')
 		origNT=wild_type[count]
 		for variant in variants:
 			if variant!=origNT:
 				#for every possible single nt variant at every position, form mt_seq, get mt folding
-				mutant=wild_type[0:count]+variant+wild_type[count+1:]
+				mutant=new_wild_type[0:count]+variant+new_wild_type[count+1:]
+				#print mutant
+				#print len(mutant)
 				mt_name=str(origNT)+str(count+1)+str(variant)
-				mt_matrix=get_matrix(mt_name,"dot.ps",mutant)
+				mt_matrix=get_matrix(mt_name,"dot.ps",mutant,0)
 				mt_partit=get_partit(mt_matrix)
-
-				if thingsToSave in ['graphs','all']:
-					# if user wished to create an average change graph, collect 
-					#the mutation positions and corr coeffs into the aforementioned lists
-					SNP_position=mt_name[1:-1]
-					SNP_positions.append(SNP_position)
-					all_mutant_partits.append(mt_partit)
-					
 					
 				if mt_name in mutsOfInterest:
 					#if, as you're going through all possible mutations, you find a mutation
 					#listed in the input, then if the user indicated so, save the appropriate files
-					if thingsToSave=='vals':
-						save_matrix(mt_matrix,"output/"+dirName+"/"+mt_name+".txt")
-						save_Basepairing_Probabilities("output/"+dirName+"/"+mt_name+"_bpProbs.txt",mutant,mt_partit)
-					elif thingsToSave=='graphs':
-						make_matrix_image(mt_matrix,"output/"+dirName+"/"+mt_name+".eps")
-						make_Basepairing_Probs_graph("output/"+dirName+"/"+mt_name+'_bpProbs_vs_wt.eps',wt_partit,mt_partit)
-					elif thingsToSave=='all':
-						save_matrix(mt_matrix,"output/"+dirName+"/"+mt_name+".txt")
-						save_Basepairing_Probabilities("output/"+dirName+"/"+mt_name+"_bpProbs.txt",mutant,mt_partit)
-						make_matrix_image(mt_matrix,"output/"+dirName+"/"+mt_name+".eps")
-						make_Basepairing_Probs_graph("output/"+dirName+"/"+mt_name+'_bpProbs_vs_wt.eps',wt_partit,mt_partit)
-					
-					if thingsToSave in ['graphs','all']:
-						SNP_positions_of_interest.append(mt_name[1:-1])
-						all_mutant_partits_of_interest.append(mt_partit)
-	
+					if save_vals==True:
+						if window:
+							save_matrix(mt_matrix,"output/"+dirName+"/"+window+".txt")
+							save_Basepairing_Probabilities("output/"+dirName+"/"+window+"_bpProbs.txt",
+								mutant,mt_partit)
+						else:
+							save_matrix(mt_matrix,"output/"+dirName+"/"+mt_name+".txt")
+							save_Basepairing_Probabilities("output/"+dirName+"/"+mt_name+"_bpProbs.txt",
+								mutant,mt_partit)
+					if shannon:
+						if window:
+							shannon_entropy(dirName, mt_matrix, window, shanWt)
+						else:
+							shannon_entropy(dirName, mt_matrix, mt_name, shanWt)
+
 				#calculate the correlation coefficient between the wildtype and
 				#mutant sequence partition function matrix column sums
 				raw_data = numpy.corrcoef(wt_partit,mt_partit)
 				corr_coeff = raw_data[0][1]	
 				#put the the corr coeff in an output file
 				os.system("echo '"+mt_name+" "+str(corr_coeff)+"' >> "+outfile_name)
+				print mt_name+" "+str(corr_coeff)
+				allSingleMuts[mt_name]=corr_coeff
 		count+=1
-	
 
-	
-	
+
 	# create empty lists to put the correlation coefficients, ranks, and p-values into
 	corr_coeffs=[]
 	ranks=[]
 	p_values=[]
 	for mutOfInterest in mutsOfInterest:
 		#get correlation coefficients for mutants of interest from all corr. coeffs. calculated
-		mutSeqOfInterest=get_mutant_sequences(wild_type,[mutOfInterest])
+		mutSeqOfInterest=get_mutant_sequences(new_wild_type,[mutOfInterest])
+		print "MUT : "
+		print mutSeqOfInterest
+		print mutOfInterest
+		print len(mutSeqOfInterest)
+		print "WT : "
+		print new_wild_type
+		print outfile_name
 		formatted_mutOfInterest=mutOfInterest[1:-1]+'|'+mutOfInterest[0]+'>'+mutOfInterest[-1]
 		#will work if the mutation is a single mutation
 		mutOfInterest_corr_coeff=getUnixCommandOutput(\
 		'grep -w "'+mutOfInterest+'" '+outfile_name)
+		print mutOfInterest_corr_coeff
 		if mutOfInterest_corr_coeff==None:
-			mt_matrix=get_matrix(mutOfInterest,"dot.ps",mutSeqOfInterest[0][1])
+			mt_matrix=get_matrix(mutOfInterest,"dot.ps",mutSeqOfInterest[0][1],0)
 			mt_name=mutSeqOfInterest[0][0]
 			mt_partit=get_partit(mt_matrix)
 			raw_data=numpy.corrcoef(wt_partit,mt_partit)
 			mutOfInterest_corr_coeff=raw_data[0][1]
 			os.system("./accurate_p_value.sh "+str(mutOfInterest_corr_coeff)+" "+outfile_name+" > actual_p_value.txt")
-			if thingsToSave=='vals':
-				save_matrix(mt_matrix,"output/"+dirName+"/"+mt_name+".txt")
-				save_Basepairing_Probabilities("output/"+dirName+"/"+mt_name+"_bpProbs.txt",mutant,mt_partit)
-			elif thingsToSave=='graphs':
-				make_matrix_image(mt_matrix,"output/"+dirName+"/"+mt_name+".eps")
-				make_Basepairing_Probs_graph("output/"+dirName+"/"+mt_name+'_bpProbs_vs_wt.eps',wt_partit,mt_partit)
-			elif thingsToSave=='all':
-				save_matrix(mt_matrix,"output/"+dirName+"/"+mt_name+".txt")
-				save_Basepairing_Probabilities("output/"+dirName+"/"+mt_name+"_bpProbs.txt",mutant,mt_partit)
-				make_matrix_image(mt_matrix,"output/"+dirName+"/"+mt_name+".eps")
-				make_Basepairing_Probs_graph("output/"+dirName+"/"+mt_name+'_bpProbs_vs_wt.eps',wt_partit,mt_partit)
-
-			if	thingsToSave in ['graphs','all']:
-				SNP_positions_of_interest.append(mutSeqOfInterest[0][0])
-				all_mutant_partits_of_interest.append(mt_partit)
+			if save_vals==True:
+				if window:
+					save_matrix(mt_matrix,"output/"+dirName+"/"+window+".txt")
+					save_Basepairing_Probabilities("output/"+dirName+"/"+window+"_bpProbs.txt",
+						mutant,mt_partit)
+				else:
+					save_matrix(mt_matrix,"output/"+dirName+"/"+mt_name+".txt")
+					save_Basepairing_Probabilities("output/"+dirName+"/"+mt_name+"_bpProbs.txt",
+						mutant,mt_partit)
 		else:
 			mutOfInterest_position=mutOfInterest_corr_coeff.split(' ')[0][1:-1]
 			mutOfInterest_corr_coeff=mutOfInterest_corr_coeff.split(' ')[1]
 			mutOfInterest_corr_coeff=mutOfInterest_corr_coeff.replace('\n','')
-
 			#run accurate_p_value.sh to find the ranking and p-value of the mutation of interest
-			os.system("./accurate_p_value.sh "+str(mutOfInterest_corr_coeff)+" "+outfile_name+" > actual_p_value.txt")
+			([rank],[p_value])=find_accurate_p_val(allSingleMuts,[mutOfInterest])
+			#os.system("./accurate_p_value.sh "+str(mutOfInterest_corr_coeff)+" "+outfile_name+" > actual_p_value.txt")
 			
-		out_file_handle = open("actual_p_value.txt","r")
+			
+			
+		#out_file_handle = open("actual_p_value.txt","r")
 		#get rank and p-value from output of accurate_p_value.sh
-		data = out_file_handle.read().split(':')
-		rank = data[0]
-		p_value = data[1]
-		p_value = p_value.replace('\n','')
+		#data = out_file_handle.read().split(':')
+		#rank = data[0]
+		#p_value = data[1]
+		#p_value = p_value.replace('\n','')
 		#print rank
 		#print corr_coeff
 		corr_coeffs.append(mutOfInterest_corr_coeff)
@@ -608,55 +927,22 @@ def get_accurate_p_value(RNA, mutsOfInterest, outfile_name,options):
 	if dirName!=None:
 		#copy corr coeff + rank + p-value to the outfile for the job at hand
 		os.system('cp '+outfile_name+' output/'+dirName)
-	
-	if	thingsToSave in ['graphs','all']:
-		#save a graph of average absolute base accessibility change for
-		#the SNPs of interest, as well as all possible single mutations
-		make_average_change_graph(wt_partit, all_mutant_partits_of_interest,SNP_positions_of_interest,dirName)
-		make_average_change_graph(wt_partit, all_mutant_partits,SNP_positions,dirName)
+		
 	#remove unneeded files at the end of the job
-	os.system('rm actual_p_value.txt '+outfile_name)
+	#os.system('rm actual_p_value.txt '+outfile_name)
 	return (corr_coeffs,ranks,p_values)
 
-def estimate_p_value(corr_coeff, length):
-	#lengths of RNA for which there are random RNAs with pre-calculated corr coeffs to refer to
-	standard_lengths = [10,20,30,40,50,60,70,80,90,100,150,200,250,300,350,400,\
-	450,500,550,600,650,700,750,800,850,900,950,1000,1500,2000]
-
-	#identify which of the standard lengths is closest to the length of RNA of interest
-	smallest_diff = 1000000
-	closest = 0
-	for standard in standard_lengths:
-		diff = abs(length-standard)
-		if (diff < smallest_diff):
-			smallest_diff = diff
-			closest = standard
-
-	#run estimate_p_value.sh to find the rank of the corr_coeff in the
-	#RNA of closest length to the RNA of interest
-	os.system("./estimate_p_value.sh "+corr_coeff+" "+str(closest)+\
-		" > estimated_p_value.txt")
-	#get the rank and p-value from the output for estimate_p_value.sh
-	out_file_handle = open("estimated_p_value.txt","r")
-	data = out_file_handle.read().split(':')
-	rank = data[0]
-	p_value = data[1]
-	p_value = p_value.replace('\n','')
-	return (rank, p_value)
-
-
-def make_matrix_image(myMatrix,filename):
-	#Make a graphic representation of the number matrix inputted and save as filename
-	name=filename.split('/')[2]
-	import matplotlib.pyplot as plt
-	#plt.matshow(myMatrix)
-	plt.matshow(myMatrix, cmap=plt.cm.hot)
-	plt.colorbar(orientation='vertical')
-	plt.title('Base-pairing probabilities in '+name[:-4])
-	plt.xlabel('Residue')
-	plt.ylabel('Residue')	
-	plt.savefig(filename,dpi=300)
-	plt.clf()
+def get_bpProbs(filename):
+	file=open(filename,"r")
+	lines=file.readlines()
+	file.close()
+	bpProbs = lines[1]
+	bpProbs = bpProbs.replace("\n","")
+	bpProbs = bpProbs.replace("[","")
+	bpProbs = bpProbs.replace("]","")
+	bpProbs = bpProbs.split(", ")
+	bpProbs = [float(x) for x in bpProbs]
+	return bpProbs
 	
 def save_matrix(myMatrix,filename):
 	#save the number matrix as a text file
@@ -686,91 +972,31 @@ def make_Basepairing_Probs_graph(filename,wt_bp_probs,mt_bp_probs):
 
 def generate_random_string(stringLength):
 	#generate a string of eight random characters, pulled from a string of possible characters
-	allChars='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+	allChars=(string.ascii_letters+string.digits)
 	randomString=''
 	count=0
-	while count<stringLength:
+	while len(randomString)<stringLength:
 		newChar=random.choice(allChars)
 		randomString+=newChar
-		count+=1
 	return randomString
-		
-
-
-def make_average_change_graph(wild_type, SNPs,SNP_positions,dirName):
-	#create a line graph of average absolute change in base-pairing probability
-	#for a given RNA and a list of SNPs
-	import matplotlib.pyplot as plt
 	
+def direxists(dirName):
+	print 'That directory already exists. Do you want to overwrite it?\n\
+Everything will be deleted. Type "y" to overwrite, "n" to cancel.'
+	overwrite = raw_input("> ")
 	
-	num_SNPs = len(SNPs)
-	
-	averages = []
-
-	wt_pos = 0
-	while (wt_pos < len(wild_type)):
-		averages.append(0)
-		c_SNP_index = 0
-		while (c_SNP_index < len(SNPs)):
-			c_SNP = SNPs[c_SNP_index]
-			averages[wt_pos] += abs(wild_type[wt_pos]-c_SNP[wt_pos])
-			c_SNP_index += 1
-		wt_pos += 1
-
-	count = 0
-	while (count < len(averages)):
-		averages[count] = averages[count]/num_SNPs
-		count += 1
-
-	out_file_handle = open('average_changes.txt','w')
-	out_file_handle.write("Position\tAverage partition function change\n")
-
-	#find average absolute change in base-pairing probability per position
-	count = 0
-	max = 0
-	x=[]
-	y=[]
-	positions=[]
-	average_bping_changes=[]
-	while (count < len(averages)):
-		if (averages[count] > max):
-			max = averages[count]
-		out_file_handle.write(str(count+1)+"\t"+str(averages[count])+"\n")
-		x.append(count+1)
-		y.append(averages[count])
-		count += 1
-	out_file_handle.close()
-	#using matplotlib create a linegraph
-	plt.figure()
-	plt.plot(x,y,'r')
-	plt.xlim(0,len(x)+1)
-	plt.ylim(0,1)
-	plt.xlabel('Residue')
-	plt.ylabel('Average Structure Change')
-	#On default, indicate the SNP positions in the graph via vertical green lines.
-	#If all possible SNP positions are listed, then omit SNP position lines,
-	#and name the end file accordingly
-	#print SNP_positions
-	#print 'afafafafaf'
-	if len(SNP_positions) != len(wild_type)*3:
-		for SNP_position in SNP_positions:
-			if SNP_position.find(',')!=-1:
-				#print SNP_position
-				subSNP_positions=SNP_position.split(',')
-				for subSNP_position in subSNP_positions:
-					subSNP_position=subSNP_position[1:-1]
-					plt.axvline(int(subSNP_position),color='g')
-			else:
-				plt.axvline(int(SNP_position),color='g')		
-		filename= 'average_changes_in_basepairing.eps'
+	if overwrite in ['y','Y']:
+		rmtree(os.getcwd()+'/output/'+dirName)
+		print '%s was emptied.'%(os.getcwd()+'/output/'+dirName)
+		os.system('mkdir output/'+dirName)
+	elif overwrite in ['n','N']:
+		sys.exit('Operation aborted!')
 	else:
-		filename='average_changes_in_basepairing_all_SNPs.eps'
-	
-	plt.savefig('output/'+dirName+'/'+filename)
-	plt.clf()
-	return
+		print 'Invalid input.'
+		direxists(dirName)
 
 if __name__ == '__main__':
-	#if SNPfold.py is run from the command line, the commence running the SNPfold program..
-	#program can not be run via importing of the file in another python script.
+	#If SNPfold.py is run from the command line, commence the SNPfold program.
+	#The program can not be run by importing the file in another python script.
 	main(sys.argv)
+	exit(0)
