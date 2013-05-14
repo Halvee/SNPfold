@@ -23,8 +23,8 @@ I.L.  Hofacker,  W.  Fontana,  P.F.  Stadler, S. Bonhoeffer, M. Tacker, P. Schus
   I.L. Hofacker & P.F. Stadler (2006) Memory Efficient Folding Algorithms for Circular RNA Secondary Structures, Bioinformatics (2006)
   A.F. BompfA1/4newerer, R. Backofen, S.H. Bernhart, J. Hertel, I.L.  Hofacker,  P.F. Stadler,  S.  Will  (2007) "Variations on {RNA} Folding and Alignment: Lessons from Benasque" J. Math. Biol.
 VERSION
-This man page documents SNPfold version 1.01.
+This man page documents SNPfold version 1.2.
 AUTHORS
-Matt Halvorsen, Sam Broadaway, Josh Martin, Alain Laederach
+Matt Halvorsen, Sam Broadaway, Josh Martin, Chas Kissick, Alain Laederach
 BUGS
 None known (yet).
