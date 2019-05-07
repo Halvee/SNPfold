@@ -1,3 +1,5 @@
+#!/usr/bin/env python2.7
+
 #	Copyright 2010-2013 Matt Halvorsen, Sam Broadaway, J.S. Martin, Chas Kissick
 #	This file is part of SNPFold.
 #
