@@ -676,28 +676,31 @@ def get_matrix(SNP,file_name,RNAseq,windowMode):
 
 	#get partition function matrix data from RNAfold output
 	file = open(file_name,"r")
-	results_data = file.read()
-	file.close()
-	
-	#format the results data from the output file... find where the pertinent data is
-	startLocation=string.find(results_data,'%data starts here')
-	stopLocation=string.find(results_data,'showpage')
-	results_data = results_data[(startLocation+18):stopLocation]
-	rows = results_data.splitlines()
 
-	for row in rows:
-		#for every row, identify the x position, y position and partit value
-		values=row.split()
-		x=values[0]
-		y=values[1]
-		partit=values[2]
+        # parse dotfile lines to get partit func matrix element values
+	for row in file:
+                
+                # make sure newline is gone
+                row = row.rstrip()
+
+                # skip row if not matrix values
+                if len(row) <= 4: continue
+                if row[-4:] != "ubox" or row.find('%') != -1: continue
+
+                #for every row, identify the x position, y position and partit value
+                values=row.split()                                              
+                x=values[0]                                                     
+                y=values[1]                                                     
+                partit=values[2]   
+
 		# If the line had 'ubox' in it (which means that it is a part of the partit. func.:
 		# Fill in at [position x, position y] of the matrix the value partit^2
 		# Fill in at [position y, position x] of the matrix the value partit^2
-		if values[3]=='ubox':
-			myMatrix[int(y)-1,int(x)-1]=(float(partit)*float(partit))
-			myMatrix[int(x)-1,int(y)-1]=(float(partit)*float(partit))
+		myMatrix[int(y)-1,int(x)-1]=(float(partit)*float(partit))
+		myMatrix[int(x)-1,int(y)-1]=(float(partit)*float(partit))
 	
+        # close filehandle
+        file.close()
 
 	# These values should be the same, since the matrix is hermitian
 	# Need s for sum of values in columns
